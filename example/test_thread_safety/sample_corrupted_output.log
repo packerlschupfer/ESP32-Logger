@@ -1,0 +1,68 @@
+========== Testing ConsoleBackend ==========
+[1000][loopTask][I] Test: Starting thread safety test with ConsoleBackend
+Phase 1: Normal concurrent logging with 6 tasks
+[1050][Worker0][I] Worker0: Task started on core 0, phase 1
+[1051][Worker1][I] Worker1: Task started on core 1, phase 1
+[1052][Worker2][I] Worker2: Task started on core 0, phase 1
+[1053][Worker3][I] Worker3: Task started on core 1, phase 1
+[1054][Worker4][I] Worker4: Task started on core 0, phase 1
+[1055][Worker5][I] Worker5: Task started on core 1, phase 1
+[1060][Worker0][I] Worker0: MSG_000_START_The_quick_brown_fox_jumps_over_the_lazy_dog_END_MSG_000
+[1061][Worker1][I] Worker1: MSG_000_START_The_quick_brown_fox_jumps_over_the_lazy_dog_END_MSG_000
+[1062][Worker2][I] Worker2: MSG_000_START_The_qu[1063][Worker3][I] Worker3: MSG_000_START_The_quick_brown_fox_jumps_over_the_lazy_dog_END_MSG_000
+ick_brown_fox_jumps_over_the_lazy_dog_END_MSG_000
+[1064][Worker4][I] Worker4: MSG_000_START_The_quick_brown_fox_jumps_over_the_lazy_dog_END_MSG_000
+[10[1066][Worker0][I] Worker0: MSG_001_START_The_quick_brown_fox_jumps_over_the_lazy_dog_END_MSG_001
+65][Worker5][I] Worker5: MSG_000_START_The_quick_brown_fox_jumps_over_the_lazy_dog_END_MSG_000
+[1067][Worker1][I] Worker1: MSG_001_START_The_quick_brown_fox_jumps_over_the_lazy_dog_END_MSG_001
+[1068][Worker2][I] Worker2: MSG_001_START_The_quick_brown_fox_jumps_over_the_lazy_dog_END_MSG_001
+[1069][Worker3][I] Worker3: MSG_002_START_The_quick_brown_fox_jumps_over_the_lazy_dog_END_MSG_002
+[1070][Worker4][I] Worker4: MSG_001_START_The_quick_brown_fox_jumps_over_the_lazy_dog_END_MSG_
+Phase 2: Stress test with rapid logging
+[2000][Stress0][W] Stress0: Stress test started - flooding logger
+[2001][Stress1][W] Stress1: Stress test started - flooding logger
+[2002][Stress0][D] Stress0: FLOOD_0000_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA_0000
+[2002][Stress1][D] Stress1: FLOOD_0000_AAAAAAAAAA[2003][Stress0][D] Stress0: FLOOD_0001_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA_0001
+AAAAAAAAAAAAAAAAAAAAAA_0000
+ming Stress test completed
+[2500][loopTask][I] Test: Backend test completed - Total messages: 2300
+
+========== Testing SynchronizedConsoleBackend ==========
+[3000][loopTask][I] Test: Starting thread safety test with SynchronizedConsoleBackend
+Phase 1: Normal concurrent logging with 6 tasks
+[3050][Worker0][I] Worker0: Task started on core 0, phase 1
+[3051][Worker1][I] Worker1: Task started on core 1, phase 1
+[3052][Worker2][I] Worker2: Task started on core 0, phase 1
+[3053][Worker3][I] Worker3: Task started on core 1, phase 1
+[3054][Worker4][I] Worker4: Task started on core 0, phase 1
+[3055][Worker5][I] Worker5: Task started on core 1, phase 1
+[3060][Worker0][I] Worker0: MSG_000_START_The_quick_brown_fox_jumps_over_the_lazy_dog_END_MSG_000
+[3065][Worker1][I] Worker1: MSG_000_START_The_quick_brown_fox_jumps_over_the_lazy_dog_END_MSG_000
+[3070][Worker2][I] Worker2: MSG_000_START_The_quick_brown_fox_jumps_over_the_lazy_dog_END_MSG_000
+[3075][Worker3][I] Worker3: MSG_000_START_The_quick_brown_fox_jumps_over_the_lazy_dog_END_MSG_000
+[3080][Worker4][I] Worker4: MSG_000_START_The_quick_brown_fox_jumps_over_the_lazy_dog_END_MSG_000
+[3085][Worker5][I] Worker5: MSG_000_START_The_quick_brown_fox_jumps_over_the_lazy_dog_END_MSG_000
+[3090][Worker0][I] Worker0: MSG_001_START_The_quick_brown_fox_jumps_over_the_lazy_dog_END_MSG_001
+[3095][Worker1][I] Worker1: MSG_001_START_The_quick_brown_fox_jumps_over_the_lazy_dog_END_MSG_001
+Phase 2: Stress test with rapid logging
+[4500][loopTask][I] Test: Backend test completed - Total messages: 2300
+
+========== Testing NonBlockingConsoleBackend ==========
+[5000][loopTask][I] Test: Starting thread safety test with NonBlockingConsoleBackend
+Phase 1: Normal concurrent logging with 6 tasks
+[5050][Worker0][I] Worker0: Task started on core 0, phase 1
+[5051][Worker1][I] Worker1: Task started on core 1, phase 1
+[5052][Worker2][I] Worker2: Task started on core 0, phase 1
+[5053][Worker3][I] Worker3: Task started on core 1, phase 1
+[5054][Worker4][I] Worker4: Task started on core 0, phase 1
+[5055][Worker5][I] Worker5: Task started on core 1, phase 1
+[5060][Worker0][I] Worker0: MSG_000_START_The_quick_brown_fox_jumps_over_the_lazy_dog_END_MSG_000
+[5065][Worker1][I] Worker1: MSG_000_START_The_quick_brown_fox_jumps_over_the_lazy_dog_END_MSG_000
+[5070][Worker2][I] Worker2: MSG_000_START_The_quick_brown_fox_jumps_over_the_lazy_dog_END_MSG_000
+[5075][Worker3][I] Worker3: MSG_000_START_The_quick_brown_fox_jumps_over_the_lazy_dog_END_MSG_000
+[5080][Worker4][I] Worker4: MSG_000_START_The_quick_brown_fox_jumps_over_the_lazy_dog_END_MSG_000
+[5085][Worker5][I] Worker5: MSG_000_START_The_quick_brown_fox_jumps_over_the_lazy_dog_END_MSG_000
+[5090][Worker0][I] Worker0: MSG_001_START_The_quick_brown_fox_jumps_over_the_lazy_dog_END_MSG_001
+[5095][Worker1][I] Worker1: MSG_001_START_The_quick_brown_fox_jumps_over_the_lazy_dog_END_MSG_001
+Phase 2: Stress test with rapid logging
+[6500][loopTask][I] Test: Backend test completed - Total messages: 2300
