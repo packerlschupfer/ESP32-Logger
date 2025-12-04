@@ -1,0 +1,43 @@
+{
+  "name": "ESP32-Logger",
+  "version": "0.1.0",
+  "description": "Thread-safe async logging library for FreeRTOS and embedded systems with tag filtering and rate limiting",
+  "keywords": [
+    "logging",
+    "freertos",
+    "async",
+    "thread-safe",
+    "embedded",
+    "esp32",
+    "arduino"
+  ],
+  "authors": [
+    {
+      "name": "packerlschupfer",
+      "email": "packerlschupfer@noreply.github.com",
+      "maintainer": true
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/packerlschupfer/ESP32-Logger.git"
+  },
+  "license": "GPL-3",
+  "frameworks": [
+    "arduino",
+    "espidf"
+  ],
+  "platforms": ["espressif32"],
+  "build": {
+    "includeDir": "src",
+    "srcDir": "src",
+    "flags": [
+      "-I src"
+    ]
+  },
+  "export": {
+    "include": [
+      "src/*"
+    ]
+  }
+}
