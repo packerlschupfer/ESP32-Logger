@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build examples (self-contained PlatformIO projects)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-${{ runner.os }}-${{ hashFiles('library.json', 'examples/**/platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      - name: Build examples
+        run: |
+          set -e
+          built=0
+          for d in examples/*/; do
+            [ -f "$d/platformio.ini" ] || continue
+            echo "::group::pio run -d $d"
+            pio run -d "$d"
+            echo "::endgroup::"
+            built=$((built + 1))
+          done
+          echo "Built $built example(s)."
+          [ "$built" -gt 0 ]
