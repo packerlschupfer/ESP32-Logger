@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    name: Build examples (self-contained PlatformIO projects)
+    name: Compile examples (PlatformIO / esp32)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -29,21 +29,18 @@ jobs:
       - name: Install PlatformIO
         run: pip install --upgrade platformio
 
-      - name: Build examples
+      - name: Compile examples
         run: |
-          set -e
-          built=0
+          set -u
+          shopt -s nullglob
+          attempted=0
+          failed=0
           for d in examples/*/; do
-            [ -f "$d/platformio.ini" ] || continue
-            # Examples reference the library via `lib_deps = ../..`, which makes
-            # PlatformIO copy the whole repo into the example's .pio/libdeps. With the
-            # workspace inside the repo that copy nests recursively and fills the disk,
-            # so relocate the .pio workspace outside the checkout for each build.
-            export PLATFORMIO_WORKSPACE_DIR="$RUNNER_TEMP/pio-ws/$(basename "$d")"
+            [ -f "${d}platformio.ini" ] || continue
             echo "::group::pio run -d $d"
-            pio run -d "$d"
+            pio run -d "$d" || { failed=$((failed + 1)); echo "FAILED: $d"; }
             echo "::endgroup::"
-            built=$((built + 1))
+            attempted=$((attempted + 1))
           done
-          echo "Built $built example(s)."
-          [ "$built" -gt 0 ]
+          echo "Attempted $attempted example(s); $failed failed."
+          [ "$attempted" -gt 0 ] && [ "$failed" -eq 0 ]
