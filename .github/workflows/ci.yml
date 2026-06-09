@@ -35,6 +35,11 @@ jobs:
           built=0
           for d in examples/*/; do
             [ -f "$d/platformio.ini" ] || continue
+            # Examples reference the library via `lib_deps = ../..`, which makes
+            # PlatformIO copy the whole repo into the example's .pio/libdeps. With the
+            # workspace inside the repo that copy nests recursively and fills the disk,
+            # so relocate the .pio workspace outside the checkout for each build.
+            export PLATFORMIO_WORKSPACE_DIR="$RUNNER_TEMP/pio-ws/$(basename "$d")"
             echo "::group::pio run -d $d"
             pio run -d "$d"
             echo "::endgroup::"
