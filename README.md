@@ -303,15 +303,20 @@ Build with `-D LOG_DEFERRED_FORMAT` to move that work to one logger task:
 - The subscriber task and its queue are replaced by the logger task, and the buffer pool
   defaults to 2 buffers instead of 8.
 
-```cpp
-void setup() {
-    Logger& logger = Logger::getInstance();
-    logger.startLogTask(1);  // start early: until it runs, messages wait in the ring
-    // ...
-}
+The logger task starts automatically when the Logger is constructed (or on the first log call
+once the scheduler runs, if it was constructed earlier). Choose its core at build time, because
+a running task cannot be moved later:
+
+```ini
+build_flags =
+    -D USE_CUSTOM_LOGGER
+    -D LOG_DEFERRED_FORMAT
+    -D CONFIG_LOG_DEFERRED_TASK_CORE=1   ; e.g. the network core, for Syslog subscribers
 ```
 
-`startSubscriberTask()` does the same thing in deferred builds.
+`startLogTask()` / `startSubscriberTask()` are then no-ops. Only the first Logger instance
+consumes the ring. With `-D CONFIG_LOG_DEFERRED_AUTOSTART=0` you must call `startLogTask()`
+yourself, early: until it runs, messages wait in the ring and are dropped once it is full.
 
 ### Crash replay
 
@@ -336,6 +341,8 @@ subscribers.
 | `CONFIG_LOG_DEFERRED_RING_SIZE` | 2048 | Ring size in bytes (a typical entry is 40-64 B) |
 | `CONFIG_LOG_DEFERRED_MAX_STRING` | 128 | Max bytes copied per `%s` argument |
 | `CONFIG_LOG_DEFERRED_RING_IN_RTC` | 1 | 0 = no-init DRAM instead of RTC slow memory |
+| `CONFIG_LOG_DEFERRED_AUTOSTART` | 1 | Start the logger task automatically |
+| `CONFIG_LOG_DEFERRED_TASK_CORE` | -1 | Core for the auto-started task (-1 = no affinity) |
 | `CONFIG_LOG_SUBSCRIBER_TASK_STACK` | 4096 | Logger task stack (it now runs the formatter, backends and subscribers) |
 
 ### Behaviour differences

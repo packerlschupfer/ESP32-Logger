@@ -178,6 +178,10 @@ Logger::Logger()
 
     // Initialize tag levels array
     memset(tagLevels_, 0, sizeof(tagLevels_));
+
+#ifdef LOG_DEFERRED_FORMAT
+    autostartLogTask();  // last: the task may start running immediately
+#endif
 }
 
 Logger::Logger(std::shared_ptr<ILogBackend> backend)
@@ -199,6 +203,10 @@ Logger::Logger(std::shared_ptr<ILogBackend> backend)
 
     // Initialize tag levels array
     memset(tagLevels_, 0, sizeof(tagLevels_));
+
+#ifdef LOG_DEFERRED_FORMAT
+    autostartLogTask();  // last: the task may start running immediately
+#endif
 }
 
 Logger::~Logger() {
@@ -787,6 +795,10 @@ bool Logger::startSubscriberTask(int coreId) {
     }
 
 #ifdef LOG_DEFERRED_FORMAT
+    // Another Logger instance already consumes the shared ring
+    if (!claimDeferredConsumer()) {
+        return false;
+    }
     // The logger task formats, writes backends and calls subscribers; no queue needed
     TaskFunction_t taskFunc = logTaskFunc;
     const char* taskName = "Logger";
@@ -981,6 +993,10 @@ constexpr uint32_t DEFERRED_BUSY_SKIP_MS = 1000;
 // Messages the logger emits about itself
 constexpr const char* DEFERRED_TAG = "Logger";
 
+// The ring is global: exactly one Logger instance (normally the singleton) may
+// consume it, or two consumers would race on the ring's tail
+std::atomic<Logger*> g_deferredConsumer{nullptr};
+
 const char* resetReasonName(esp_reset_reason_t reason) {
     switch (reason) {
         case ESP_RST_POWERON:   return "POWERON";
@@ -1019,7 +1035,30 @@ void Logger::enqueueDeferred(esp_log_level_t level, const char* tag, uint8_t fla
     TaskHandle_t logTask = subscriberTaskHandle;
     if (logTask) {
         xTaskNotifyGive(logTask);
+    } else if (!autostartDone_.load(std::memory_order_relaxed)) {
+        // Logger was constructed before the scheduler started: start the task on the
+        // first log call that can (one-shot; a caller pays for xTaskCreate once)
+        autostartLogTask();
     }
+}
+
+bool Logger::claimDeferredConsumer() {
+    Logger* expected = nullptr;
+    return g_deferredConsumer.compare_exchange_strong(expected, this) || expected == this;
+}
+
+void Logger::autostartLogTask() {
+#if CONFIG_LOG_DEFERRED_AUTOSTART
+    if (xTaskGetSchedulerState() == taskSCHEDULER_NOT_STARTED) {
+        return;  // retried from enqueueDeferred once the scheduler runs
+    }
+    bool expected = false;
+    if (autostartDone_.compare_exchange_strong(expected, true)) {
+        startSubscriberTask(CONFIG_LOG_DEFERRED_TASK_CORE);
+    }
+#else
+    autostartDone_.store(true);
+#endif
 }
 
 void Logger::enqueueDeferredf(esp_log_level_t level, const char* tag, uint8_t flags,
@@ -1125,6 +1164,7 @@ void Logger::reportDeferredOverflow() {
 }
 
 void Logger::drainDeferred() {
+    if (!claimDeferredConsumer()) return;
     if (drainMutex_ && xSemaphoreTake(drainMutex_, pdMS_TO_TICKS(LoggerConfig::MUTEX_STANDARD_TIMEOUT_MS)) != pdTRUE) {
         mutexTimeouts_.fetch_add(1);
         return;

@@ -60,6 +60,20 @@
 #define CONFIG_LOG_DEFERRED_MAX_STRING 128
 #endif
 
+// Start the logger task automatically: when the Logger is constructed, or on the
+// first log call once the FreeRTOS scheduler is running. Without it nothing is
+// ever printed until the application calls Logger::startLogTask().
+#ifndef CONFIG_LOG_DEFERRED_AUTOSTART
+#define CONFIG_LOG_DEFERRED_AUTOSTART 1
+#endif
+
+// Core for the auto-started logger task (-1 = no affinity). Pin it to the core
+// your subscribers need (e.g. the network core for Syslog): a later
+// startLogTask(core) call cannot move an already running task.
+#ifndef CONFIG_LOG_DEFERRED_TASK_CORE
+#define CONFIG_LOG_DEFERRED_TASK_CORE -1
+#endif
+
 // Place the ring in RTC slow memory (1) or in no-init DRAM (0)
 #ifndef CONFIG_LOG_DEFERRED_RING_IN_RTC
 #define CONFIG_LOG_DEFERRED_RING_IN_RTC 1

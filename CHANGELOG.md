@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   formatter chain from every logging task's stack.
 - Deferred ring in RTC slow memory: entries still queued at a panic, watchdog or software
   reset are replayed on the next boot as `[pre-reset]`, with the reset reason.
+- Logger task auto-start (`CONFIG_LOG_DEFERRED_AUTOSTART`, `CONFIG_LOG_DEFERRED_TASK_CORE`)
 - `Logger::startLogTask()`, `Logger::isDeferred()`, `Logger::drainDeferred()`,
   `Logger::getDeferredOverflows()`
 - Host tests for the deferred ring (`make -C test/host`), run in CI

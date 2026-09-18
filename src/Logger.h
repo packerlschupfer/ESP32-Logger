@@ -270,9 +270,10 @@ public:
      * @param coreId Core to pin task to (-1 for no affinity, 0 or 1 for specific core)
      * @return true if task started successfully
      * @note In deferred builds this task formats every message, writes the backends and
-     *       calls subscribers. Start it early in setup(): until it runs, messages wait in
-     *       the ring and are dropped once it is full. Without LOG_DEFERRED_FORMAT this is
-     *       the same as startSubscriberTask().
+     *       calls subscribers. Until it runs, messages wait in the ring and are dropped once
+     *       it is full. With CONFIG_LOG_DEFERRED_AUTOSTART (default) it is started
+     *       automatically on CONFIG_LOG_DEFERRED_TASK_CORE and this call is a no-op.
+     *       Without LOG_DEFERRED_FORMAT this is the same as startSubscriberTask().
      */
     bool startLogTask(int coreId = -1) { return startSubscriberTask(coreId); }
 
@@ -356,6 +357,7 @@ private:
     void deliverDeferred(const DeferredLog::Record& record, const char* message);
     void reportResetRecovery();
     void reportDeferredOverflow();
+    void autostartLogTask();
     static void logTaskFunc(void* param);
 
     // Owned by whichever task drains the ring (logger task, or flush() before it starts)
@@ -364,6 +366,8 @@ private:
     SemaphoreHandle_t drainMutex_ = nullptr;
     uint32_t reportedOverflows_ = 0;
     bool resetReported_ = false;
+    std::atomic<bool> autostartDone_{false};
+    bool claimDeferredConsumer();
 #endif
 
     // Core state with atomic operations for thread safety

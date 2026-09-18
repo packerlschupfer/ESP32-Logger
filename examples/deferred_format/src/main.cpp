@@ -41,9 +41,9 @@ void setup() {
     logger.setLogLevel(ESP_LOG_DEBUG);
     logger.setMaxLogsPerSecond(0);
 
-    // Start the logger task first: until it runs, messages wait in the ring.
-    // This also prints the reset reason and replays pre-reset entries.
-    logger.startLogTask(1);
+    // The logger task was started automatically when the Logger was constructed
+    // (core from CONFIG_LOG_DEFERRED_TASK_CORE). It prints the reset reason and
+    // replays entries queued before the last reset.
 
     LOGI("Deferred formatting: %s", Logger::isDeferred() ? "on" : "off");
     LOG_DEBUG("Main", "width/precision: [%*d] [%-6s] [%.3s] [%08.3f] [%e] [%p] [%%] [%c]",
