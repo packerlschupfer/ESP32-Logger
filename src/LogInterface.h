@@ -38,6 +38,14 @@ typedef void (*custom_log_function_t)(esp_log_level_t level, const char* tag, co
     }
     
     // Core logging function that routes to custom implementation with tag-level filtering
+    // format(printf, 3, 4): the format string is parameter 3 and the varargs start at 4.
+    // Without this the compiler type-checks NOTHING at any LOG_* call site, in this
+    // library's consumers or in any other ESP32-* library routed through USE_CUSTOM_LOGGER.
+    // Adding it on 2026-09-18 surfaced 30 real mismatches across seven repositories,
+    // including %f given an int, %s given a std::string object (undefined behaviour), and
+    // %ld given a 64-bit time_t - which reads half the vararg and desynchronises every
+    // argument after it. Do not remove it to silence a warning; fix the call site.
+    __attribute__((format(printf, 3, 4)))
     static inline void log_write_impl(esp_log_level_t level, const char* tag, const char* format, ...) {
         // Use tag-aware level checking for better performance
         if (custom_log_is_enabled_for_tag(level, tag)) {
