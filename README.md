@@ -44,6 +44,7 @@ See PROFESSIONAL_LOGGER.md for detailed professional features documentation.
 - [Usage](#usage)
 - [Configuration](#configuration)
 - [Log Subscriber Callbacks](#log-subscriber-callbacks)
+- [Deferred Formatting](#deferred-formatting-log_deferred_format)
 - [Zero-Overhead Logging Interface](#zero-overhead-logging-interface)
 - [API Reference](#api-reference)
 - [Making Logger Optional in Libraries](#making-logger-optional-in-libraries)
@@ -286,6 +287,72 @@ build_flags =
 - **Fallback mode**: If `startSubscriberTask()` not called, callbacks run synchronously (legacy behavior)
 
 ---
+
+## Deferred Formatting (`LOG_DEFERRED_FORMAT`)
+
+By default every `LOG_*` call formats its message on the **calling task's stack**. newlib's
+formatter chain costs roughly 1 kB there (`_svfprintf_r` alone is an 800 B frame), and every
+task that logs has to be sized for it.
+
+Build with `-D LOG_DEFERRED_FORMAT` to move that work to one logger task:
+
+- The caller checks level and rate limit, walks the format string with a small hand-written
+  parser, and copies the argument values (and `%s` contents) into a ring buffer.
+- The **Logger** task formats each conversion with `snprintf`, writes the backends and calls
+  the subscribers. Syslog and other heavy subscribers never run on caller stacks.
+- The subscriber task and its queue are replaced by the logger task, and the buffer pool
+  defaults to 2 buffers instead of 8.
+
+```cpp
+void setup() {
+    Logger& logger = Logger::getInstance();
+    logger.startLogTask(1);  // start early: until it runs, messages wait in the ring
+    // ...
+}
+```
+
+`startSubscriberTask()` does the same thing in deferred builds.
+
+### Crash replay
+
+The ring lives in RTC slow memory (`RTC_NOINIT_ATTR`). It uses no DRAM and survives panic,
+watchdog and software resets. On the next boot the logger prints the reset reason, then
+replays entries that were still queued, prefixed with `[pre-reset]`:
+
+```
+[1523][Logger][W] Logger: Reset reason PANIC: 2 log entries recovered from before the reset
+[pre-reset][80211][loopTask][E] Main: about to panic on purpose (1)
+```
+
+Replay only happens when the firmware is identical (the app ELF SHA is stored with the ring),
+because stored format pointers refer to that flash image. After power loss or brownout the
+RTC memory is gone and the logger says so. Pre-reset entries go to the backends only, not to
+subscribers.
+
+### Configuration
+
+| Define | Default | Meaning |
+|--------|---------|---------|
+| `CONFIG_LOG_DEFERRED_RING_SIZE` | 2048 | Ring size in bytes (a typical entry is 40-64 B) |
+| `CONFIG_LOG_DEFERRED_MAX_STRING` | 128 | Max bytes copied per `%s` argument |
+| `CONFIG_LOG_DEFERRED_RING_IN_RTC` | 1 | 0 = no-init DRAM instead of RTC slow memory |
+| `CONFIG_LOG_SUBSCRIBER_TASK_STACK` | 4096 | Logger task stack (it now runs the formatter, backends and subscribers) |
+
+### Behaviour differences
+
+- Output is asynchronous: lines appear shortly after the call, and can interleave differently
+  with direct `Serial` / `printf` output.
+- When the ring is full, messages are dropped (never blocking the caller). The logger reports
+  how many were dropped; `getDeferredOverflows()` returns the count.
+- `%s` arguments are truncated at `CONFIG_LOG_DEFERRED_MAX_STRING`.
+- `%n`, `%ls`, `%lc` and `%Lf` are not captured: the message is printed up to that point,
+  followed by the raw rest of the format string.
+- `flush()` waits for the ring to drain (or drains it on the calling task if the logger task
+  is not running).
+- Argument capture relies on the format string matching the arguments. `LogInterface.h`
+  enforces this at compile time with `__attribute__((format(printf, 3, 4)))`.
+
+Host tests for the ring and argument capture: `make -C test/host`.
 
 ## Zero-Overhead Logging Interface
 

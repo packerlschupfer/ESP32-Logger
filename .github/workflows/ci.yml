@@ -7,6 +7,14 @@ on:
   workflow_dispatch:
 
 jobs:
+  host-tests:
+    name: Host tests (DeferredLog)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run
+        run: make -C test/host
+
   build:
     name: Compile examples (pioarduino / Arduino core 3.3.x)
     runs-on: ubuntu-24.04

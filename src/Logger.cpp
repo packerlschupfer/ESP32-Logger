@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <esp_log.h>
 #include <soc/soc.h>  // For SOC_DRAM_LOW, SOC_DRAM_HIGH
+#include <esp_system.h>  // esp_reset_reason
 
 // Helper to check if pointer is in readable memory (DRAM or flash-mapped)
 // Supports ESP32, ESP32-S2, ESP32-S3, ESP32-C3, ESP32-C6
@@ -168,6 +169,10 @@ Logger::Logger()
       rateLimitMutex(createMutexSafe()),
       lastLogTime(0),
       logCounter(0) {
+#ifdef LOG_DEFERRED_FORMAT
+    DeferredLog::init();
+    drainMutex_ = createMutexSafe();
+#endif
     // Add default non-blocking console backend to prevent freezes
     backends.push_back(std::make_shared<NonBlockingConsoleBackend>());
 
@@ -182,6 +187,10 @@ Logger::Logger(std::shared_ptr<ILogBackend> backend)
       rateLimitMutex(createMutexSafe()),
       lastLogTime(0),
       logCounter(0) {
+#ifdef LOG_DEFERRED_FORMAT
+    DeferredLog::init();
+    drainMutex_ = createMutexSafe();
+#endif
     if (backend) {
         backends.push_back(std::move(backend));
     } else {
@@ -200,6 +209,9 @@ Logger::~Logger() {
     if (subscriberMutex) vSemaphoreDelete(subscriberMutex);
     if (tagMutex) vSemaphoreDelete(tagMutex);
     if (rateLimitMutex) vSemaphoreDelete(rateLimitMutex);
+#ifdef LOG_DEFERRED_FORMAT
+    if (drainMutex_) vSemaphoreDelete(drainMutex_);
+#endif
 }
 
 Logger& Logger::getInstance() {
@@ -503,6 +515,10 @@ void Logger::logV(esp_log_level_t level, const char* tag, const char* format, va
     if (!isLevelEnabledForTag(tag, level)) return;
     if (!checkRateLimit()) return;
 
+#ifdef LOG_DEFERRED_FORMAT
+    // No formatting on the caller's stack: capture and hand off to the logger task
+    enqueueDeferred(level, tag, 0, format, args);
+#else
     auto& pool = BufferPool::getInstance();
 
     // Get buffer from pool
@@ -543,16 +559,21 @@ void Logger::logV(esp_log_level_t level, const char* tag, const char* format, va
     }
 
     pool.release(formatBuffer);
+#endif
 }
 
 void Logger::logNnL(esp_log_level_t level, const char* tag, const char* format, ...) {
     if (!isLevelEnabledForTag(tag, level)) return;
     if (!checkRateLimit()) return;
 
-    auto& pool = BufferPool::getInstance();
-
     va_list args;
     va_start(args, format);
+
+#ifdef LOG_DEFERRED_FORMAT
+    enqueueDeferred(level, tag, DeferredLog::FLAG_NO_NEWLINE, format, args);
+    va_end(args);
+#else
+    auto& pool = BufferPool::getInstance();
 
     char* formatBuffer = pool.acquire();
     if (!formatBuffer) {
@@ -581,16 +602,21 @@ void Logger::logNnL(esp_log_level_t level, const char* tag, const char* format, 
     }
 
     pool.release(formatBuffer);
+#endif
 }
 
 void Logger::logInL(const char* format, ...) {
     if (!isLoggingEnabled.load()) return;
     if (!checkRateLimit()) return;
 
-    auto& pool = BufferPool::getInstance();
-
     va_list args;
     va_start(args, format);
+
+#ifdef LOG_DEFERRED_FORMAT
+    enqueueDeferred(ESP_LOG_INFO, "INL", DeferredLog::FLAG_NO_HEADER, format, args);
+    va_end(args);
+#else
+    auto& pool = BufferPool::getInstance();
 
     char* formatBuffer = pool.acquire();
     if (!formatBuffer) {
@@ -606,6 +632,7 @@ void Logger::logInL(const char* format, ...) {
 
     writeToBackends(formatBuffer, strlen(formatBuffer));
     pool.release(formatBuffer);
+#endif
 }
 
 void Logger::logDirect(esp_log_level_t level, const char* tag, const char* message) {
@@ -613,6 +640,9 @@ void Logger::logDirect(esp_log_level_t level, const char* tag, const char* messa
     if (!isLevelEnabledForTag(tag, level)) return;
     // Note: logDirect intentionally bypasses rate limiting but still notifies subscribers
 
+#ifdef LOG_DEFERRED_FORMAT
+    enqueueDeferredf(level, tag, 0, "%s", message);
+#else
     // Notify subscribers with the raw message
     notifySubscribers(level, tag, message);
 
@@ -633,9 +663,23 @@ void Logger::logDirect(esp_log_level_t level, const char* tag, const char* messa
     } else {
         esp_log_write(level, tag, "%s", message);
     }
+#endif
 }
 
 void Logger::flush() {
+#ifdef LOG_DEFERRED_FORMAT
+    // Get queued messages out before flushing the backends
+    TaskHandle_t logTask = subscriberTaskHandle;
+    if (!logTask) {
+        drainDeferred();
+    } else if (xTaskGetCurrentTaskHandle() != logTask) {
+        for (int i = 0; i < 50 && !DeferredLog::empty(); i++) {
+            xTaskNotifyGive(logTask);
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+#endif
+
     // Flush directly without mutex if scheduler not started (single-threaded)
     if (!backendMutex) {
         for (auto& backend : backends) {
@@ -742,6 +786,11 @@ bool Logger::startSubscriberTask(int coreId) {
         return true;
     }
 
+#ifdef LOG_DEFERRED_FORMAT
+    // The logger task formats, writes backends and calls subscribers; no queue needed
+    TaskFunction_t taskFunc = logTaskFunc;
+    const char* taskName = "Logger";
+#else
     // Create queue if not exists
     if (subscriberQueue == nullptr) {
         subscriberQueue = xQueueCreate(CONFIG_LOG_SUBSCRIBER_QUEUE_SIZE, sizeof(LogSubscriberMessage));
@@ -749,6 +798,9 @@ bool Logger::startSubscriberTask(int coreId) {
             return false;
         }
     }
+    TaskFunction_t taskFunc = subscriberTaskFunc;
+    const char* taskName = "LogSub";
+#endif
 
     subscriberTaskRunning.store(true);
 
@@ -756,8 +808,8 @@ bool Logger::startSubscriberTask(int coreId) {
     BaseType_t result;
     if (coreId >= 0 && coreId <= 1) {
         result = xTaskCreatePinnedToCore(
-            subscriberTaskFunc,
-            "LogSub",
+            taskFunc,
+            taskName,
             CONFIG_LOG_SUBSCRIBER_TASK_STACK,
             this,
             CONFIG_LOG_SUBSCRIBER_TASK_PRIORITY,
@@ -766,8 +818,8 @@ bool Logger::startSubscriberTask(int coreId) {
         );
     } else {
         result = xTaskCreate(
-            subscriberTaskFunc,
-            "LogSub",
+            taskFunc,
+            taskName,
             CONFIG_LOG_SUBSCRIBER_TASK_STACK,
             this,
             CONFIG_LOG_SUBSCRIBER_TASK_PRIORITY,
@@ -791,6 +843,10 @@ void Logger::stopSubscriberTask() {
 
     // Signal task to stop
     subscriberTaskRunning.store(false);
+
+#ifdef LOG_DEFERRED_FORMAT
+    xTaskNotifyGive(subscriberTaskHandle);
+#endif
 
     // Send a dummy message to wake up the task if it's blocked on queue
     if (subscriberQueue) {
@@ -828,25 +884,7 @@ void Logger::subscriberTaskFunc(void* param) {
                 break;
             }
 
-            // Get a snapshot of callbacks
-            Logger::LogSubscriberCallback localCallbacks[MAX_SUBSCRIBERS];
-            uint8_t localCount = 0;
-
-            if (logger->subscriberMutex &&
-                xSemaphoreTake(logger->subscriberMutex, pdMS_TO_TICKS(LoggerConfig::MUTEX_SHORT_TIMEOUT_MS)) == pdTRUE) {
-                localCount = logger->subscriberCount.load();
-                for (uint8_t i = 0; i < localCount; i++) {
-                    localCallbacks[i] = logger->subscribers[i];
-                }
-                xSemaphoreGive(logger->subscriberMutex);
-            }
-
-            // Invoke callbacks (without mutex held)
-            for (uint8_t i = 0; i < localCount; i++) {
-                if (localCallbacks[i] != nullptr) {
-                    localCallbacks[i](msg.level, msg.tag, msg.message);
-                }
-            }
+            logger->invokeSubscribers(msg.level, msg.tag, msg.message);
         }
     }
 
@@ -893,6 +931,13 @@ void Logger::notifySubscribers(esp_log_level_t level, const char* tag, const cha
 
     // Fallback: synchronous notification (legacy behavior, not recommended)
     // Only used if startSubscriberTask() was never called
+    invokeSubscribers(level, tag, message);
+}
+
+void Logger::invokeSubscribers(esp_log_level_t level, const char* tag, const char* message) {
+    if (subscriberCount.load() == 0) {
+        return;
+    }
 
     // Copy callbacks while holding mutex to avoid calling with mutex held
     LogSubscriberCallback localCallbacks[MAX_SUBSCRIBERS];
@@ -915,6 +960,231 @@ void Logger::notifySubscribers(esp_log_level_t level, const char* tag, const cha
         }
     }
 }
+
+#ifdef LOG_DEFERRED_FORMAT
+// ---------------------------------------------------------------------------
+// Deferred formatting (LOG_DEFERRED_FORMAT)
+//
+// Callers only capture arguments into DeferredLog's ring. Everything with a
+// large stack frame - newlib's formatter, backend writes, subscriber callbacks
+// such as Syslog - runs on the logger task (or in drainDeferred()).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// How long an entry may stay half-written before the logger task gives up on
+// its producer (e.g. a task deleted mid-log). Must be far above any normal
+// preemption delay: a producer that resumes after the skip would write into
+// ring space that has been handed to another entry.
+constexpr uint32_t DEFERRED_BUSY_SKIP_MS = 1000;
+
+// Messages the logger emits about itself
+constexpr const char* DEFERRED_TAG = "Logger";
+
+const char* resetReasonName(esp_reset_reason_t reason) {
+    switch (reason) {
+        case ESP_RST_POWERON:   return "POWERON";
+        case ESP_RST_EXT:       return "EXT";
+        case ESP_RST_SW:        return "SW";
+        case ESP_RST_PANIC:     return "PANIC";
+        case ESP_RST_INT_WDT:   return "INT_WDT";
+        case ESP_RST_TASK_WDT:  return "TASK_WDT";
+        case ESP_RST_WDT:       return "WDT";
+        case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
+        case ESP_RST_BROWNOUT:  return "BROWNOUT";
+        case ESP_RST_SDIO:      return "SDIO";
+        default:                return "UNKNOWN";
+    }
+}
+
+bool isAbnormalReset(esp_reset_reason_t reason) {
+    return reason == ESP_RST_PANIC || reason == ESP_RST_INT_WDT || reason == ESP_RST_TASK_WDT ||
+           reason == ESP_RST_WDT || reason == ESP_RST_BROWNOUT;
+}
+
+const char* currentTaskName() {
+    if (xTaskGetSchedulerState() == taskSCHEDULER_NOT_STARTED) return "boot";
+    const char* name = pcTaskGetName(nullptr);
+    return name ? name : "?";
+}
+
+} // namespace
+
+void Logger::enqueueDeferred(esp_log_level_t level, const char* tag, uint8_t flags,
+                             const char* format, va_list args) {
+    if (!DeferredLog::push(level, tag, format, args, flags)) {
+        droppedLogs.fetch_add(1);
+        return;
+    }
+    TaskHandle_t logTask = subscriberTaskHandle;
+    if (logTask) {
+        xTaskNotifyGive(logTask);
+    }
+}
+
+void Logger::enqueueDeferredf(esp_log_level_t level, const char* tag, uint8_t flags,
+                              const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    enqueueDeferred(level, tag, flags, format, args);
+    va_end(args);
+}
+
+DeferredLog::PopResult Logger::processDeferred(bool skipBusy) {
+    DeferredLog::Record record;
+    const DeferredLog::PopResult result =
+        DeferredLog::pop(record, deferredMessage_, sizeof(deferredMessage_), skipBusy);
+    if (result == DeferredLog::PopResult::OK) {
+        deliverDeferred(record, deferredMessage_);
+    }
+    return result;
+}
+
+void Logger::deliverDeferred(const DeferredLog::Record& record, const char* message) {
+    // Pre-reset entries go to the backends only: subscribers (e.g. Syslog) would
+    // stamp them with the current time, and they are rarely connected this early.
+    if (!record.preReset) {
+        invokeSubscribers(record.level, record.tag, message);
+    }
+
+    if (record.flags & DeferredLog::FLAG_NO_HEADER) {
+        writeToBackends(message, strlen(message));
+        return;
+    }
+
+    const bool newline = !(record.flags & DeferredLog::FLAG_NO_NEWLINE);
+    int len = snprintf(deferredLine_, sizeof(deferredLine_),
+                       "%s[%lu][%s][%s] %s: %s%s",
+                       record.preReset ? "[pre-reset]" : "",
+                       static_cast<unsigned long>(record.timestamp),
+                       record.task[0] ? record.task : "?",
+                       levelToString(record.level),
+                       record.tag[0] ? record.tag : "?",
+                       message,
+                       newline ? "\r\n" : "");
+    if (len < 0) return;
+
+    // Ensure message wasn't truncated (keep the line ending if there is one)
+    if (len >= static_cast<int>(sizeof(deferredLine_))) {
+        len = sizeof(deferredLine_) - 1;
+        if (newline) {
+            deferredLine_[len - 2] = '\r';
+            deferredLine_[len - 1] = '\n';
+        }
+        deferredLine_[len] = '\0';
+    }
+
+    writeToBackends(deferredLine_, len);
+}
+
+void Logger::reportResetRecovery() {
+    if (resetReported_) return;
+    resetReported_ = true;
+
+    const esp_reset_reason_t reason = esp_reset_reason();
+    const uint32_t recovered = DeferredLog::recoveredCount();
+    const uint32_t incomplete = DeferredLog::recoveredIncompleteCount();
+
+    DeferredLog::Record record = {};
+    record.level = (isAbnormalReset(reason) || recovered > 0) ? ESP_LOG_WARN : ESP_LOG_INFO;
+    record.timestamp = millis();
+    strncpy(record.tag, DEFERRED_TAG, sizeof(record.tag) - 1);
+    strncpy(record.task, currentTaskName(), sizeof(record.task) - 1);
+
+    // Always reported: an empty ring after an unexplained restart is evidence too
+    // (RTC memory is lost on power-on and brownout, kept on panic/WDT/software reset)
+    if (DeferredLog::ringSurvivedReset()) {
+        snprintf(deferredMessage_, sizeof(deferredMessage_),
+                 "Reset reason %s: %lu log entries recovered from before the reset%s",
+                 resetReasonName(reason),
+                 static_cast<unsigned long>(recovered),
+                 incomplete ? " (plus incomplete ones, skipped)" : "");
+    } else {
+        snprintf(deferredMessage_, sizeof(deferredMessage_),
+                 "Reset reason %s: no log entries recovered (ring not retained: power loss, "
+                 "brownout, or new firmware)",
+                 resetReasonName(reason));
+    }
+    deliverDeferred(record, deferredMessage_);
+}
+
+void Logger::reportDeferredOverflow() {
+    const uint32_t overflows = DeferredLog::overflowCount();
+    if (overflows == reportedOverflows_) return;
+
+    DeferredLog::Record record = {};
+    record.level = ESP_LOG_WARN;
+    record.timestamp = millis();
+    strncpy(record.tag, DEFERRED_TAG, sizeof(record.tag) - 1);
+    strncpy(record.task, currentTaskName(), sizeof(record.task) - 1);
+    snprintf(deferredMessage_, sizeof(deferredMessage_),
+             "%lu log entries dropped (deferred ring full or entry too large)",
+             static_cast<unsigned long>(overflows - reportedOverflows_));
+    reportedOverflows_ = overflows;
+    deliverDeferred(record, deferredMessage_);
+}
+
+void Logger::drainDeferred() {
+    if (drainMutex_ && xSemaphoreTake(drainMutex_, pdMS_TO_TICKS(LoggerConfig::MUTEX_STANDARD_TIMEOUT_MS)) != pdTRUE) {
+        mutexTimeouts_.fetch_add(1);
+        return;
+    }
+
+    reportResetRecovery();
+    // Never skip busy entries here: their producers are alive on other tasks
+    while (processDeferred(false) == DeferredLog::PopResult::OK) {
+    }
+    reportDeferredOverflow();
+
+    if (drainMutex_) xSemaphoreGive(drainMutex_);
+}
+
+void Logger::logTaskFunc(void* param) {
+    Logger* logger = static_cast<Logger*>(param);
+    TickType_t busySince = 0;
+    bool skipBusy = false;
+
+    logger->drainDeferred();  // reset report + anything queued before the task started
+
+    while (logger->subscriberTaskRunning.load()) {
+        DeferredLog::PopResult result = DeferredLog::PopResult::EMPTY;
+        if (!logger->drainMutex_ ||
+            xSemaphoreTake(logger->drainMutex_, pdMS_TO_TICKS(LoggerConfig::MUTEX_STANDARD_TIMEOUT_MS)) == pdTRUE) {
+            result = logger->processDeferred(skipBusy);
+            if (result == DeferredLog::PopResult::EMPTY) {
+                logger->reportDeferredOverflow();
+            }
+            if (logger->drainMutex_) xSemaphoreGive(logger->drainMutex_);
+        }
+
+        if (result == DeferredLog::PopResult::OK) {
+            busySince = 0;
+            skipBusy = false;
+            continue;
+        }
+
+        if (result == DeferredLog::PopResult::BUSY) {
+            // A producer is mid-write; give it time to finish
+            const TickType_t now = xTaskGetTickCount();
+            if (busySince == 0) {
+                busySince = now ? now : 1;
+            } else if (now - busySince > pdMS_TO_TICKS(DEFERRED_BUSY_SKIP_MS)) {
+                skipBusy = true;
+            }
+            vTaskDelay(1);
+            continue;
+        }
+
+        busySince = 0;
+        skipBusy = false;
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
+    }
+
+    // Clean exit
+    logger->subscriberTaskHandle = nullptr;
+    vTaskDelete(nullptr);
+}
+#endif // LOG_DEFERRED_FORMAT
 
 // Global logger getter
 Logger& getLogger() {

@@ -51,7 +51,11 @@
 #endif
 
 #ifndef CONFIG_LOG_BUFFER_POOL_SIZE
+#ifdef LOG_DEFERRED_FORMAT
+#define CONFIG_LOG_BUFFER_POOL_SIZE 2  // Only the logger task formats in deferred mode
+#else
 #define CONFIG_LOG_BUFFER_POOL_SIZE 8  // Buffer pool size for thread safety
+#endif
 #endif
 
 #ifndef CONFIG_LOG_SUBSCRIBER_QUEUE_SIZE
@@ -59,7 +63,11 @@
 #endif
 
 #ifndef CONFIG_LOG_SUBSCRIBER_TASK_STACK
+#ifdef LOG_DEFERRED_FORMAT
+#define CONFIG_LOG_SUBSCRIBER_TASK_STACK 4096  // Logger task: formatting + backends + subscribers
+#else
 #define CONFIG_LOG_SUBSCRIBER_TASK_STACK 3072  // Stack size for subscriber task
+#endif
 #endif
 
 #ifndef CONFIG_LOG_SUBSCRIBER_TASK_PRIORITY
@@ -75,6 +83,8 @@
 #endif
 
 #define MAX_LOGS_PER_SECOND 100
+
+#include "DeferredLog.h"
 
 /**
  * @brief Buffer pool for memory-efficient logging
@@ -255,6 +265,42 @@ public:
      */
     bool isSubscriberTaskRunning() const { return subscriberTaskHandle != nullptr; }
 
+    /**
+     * @brief Start the logger task (LOG_DEFERRED_FORMAT builds)
+     * @param coreId Core to pin task to (-1 for no affinity, 0 or 1 for specific core)
+     * @return true if task started successfully
+     * @note In deferred builds this task formats every message, writes the backends and
+     *       calls subscribers. Start it early in setup(): until it runs, messages wait in
+     *       the ring and are dropped once it is full. Without LOG_DEFERRED_FORMAT this is
+     *       the same as startSubscriberTask().
+     */
+    bool startLogTask(int coreId = -1) { return startSubscriberTask(coreId); }
+
+    /**
+     * @brief true if this build defers formatting to the logger task
+     */
+    static constexpr bool isDeferred() {
+#ifdef LOG_DEFERRED_FORMAT
+        return true;
+#else
+        return false;
+#endif
+    }
+
+#ifdef LOG_DEFERRED_FORMAT
+    /**
+     * @brief Format and output everything queued, on the calling task
+     * @note Uses the full formatting stack on the caller. Called by flush() when the
+     *       logger task is not running.
+     */
+    void drainDeferred();
+
+    /**
+     * @brief Entries dropped because the deferred ring was full
+     */
+    uint32_t getDeferredOverflows() const { return DeferredLog::overflowCount(); }
+#endif
+
     // Core logging methods
     void log(esp_log_level_t level, const char* tag, const char* format, ...) override;
     void logNnL(esp_log_level_t level, const char* tag, const char* format, ...) override;
@@ -298,6 +344,27 @@ private:
     bool checkRateLimit();
     void writeToBackends(const char* message, size_t length);
     void notifySubscribers(esp_log_level_t level, const char* tag, const char* message);
+    void invokeSubscribers(esp_log_level_t level, const char* tag, const char* message);
+
+#ifdef LOG_DEFERRED_FORMAT
+    // Deferred mode: callers enqueue, the logger task formats and delivers
+    void enqueueDeferred(esp_log_level_t level, const char* tag, uint8_t flags,
+                         const char* format, va_list args);
+    void enqueueDeferredf(esp_log_level_t level, const char* tag, uint8_t flags,
+                          const char* format, ...) __attribute__((format(printf, 5, 6)));
+    DeferredLog::PopResult processDeferred(bool skipBusy);
+    void deliverDeferred(const DeferredLog::Record& record, const char* message);
+    void reportResetRecovery();
+    void reportDeferredOverflow();
+    static void logTaskFunc(void* param);
+
+    // Owned by whichever task drains the ring (logger task, or flush() before it starts)
+    char deferredMessage_[CONFIG_LOG_BUFFER_SIZE];
+    char deferredLine_[CONFIG_LOG_BUFFER_SIZE];
+    SemaphoreHandle_t drainMutex_ = nullptr;
+    uint32_t reportedOverflows_ = 0;
+    bool resetReported_ = false;
+#endif
 
     // Core state with atomic operations for thread safety
     std::atomic<bool> initialized_{false};
